@@ -29,8 +29,21 @@ CACHE_DIR_NAMESPACE = "cappy"
 CACHE_TIMEOUT = 60 * 60 * 24
 CACHE_COMPRESS = False
 
+
 def get_cache_dir(cache_dir):
     return os.path.join(cache_dir, CACHE_DIR_NAMESPACE)
+
+
+def valid_file(fname, timestamp=None):
+    global CACHE_TIMEOUT
+
+    if timestamp is None:
+        timestime = datetime.datetime.utcnow()
+
+    last_modified = datetime.datetime.utcfromtimestamp(os.path.getmtime(fname))
+    valid_till = last_modified + timedelta(seconds=CACHE_TIMEOUT)
+
+    return valid_till > timestamp
 
 
 def make_dirs(path):
@@ -77,15 +90,8 @@ class CacheHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
         hit = False
         if os.path.exists(cache_file):
-            if CACHE_TIMEOUT == 0:
+            if CACHE_TIMEOUT == 0 or valid_file(cache_file, now):
                 hit = True
-            else:
-                last_modified = datetime.datetime.utcfromtimestamp(os.path.getmtime(cache_file))
-                valid_till = last_modified + timedelta(seconds=CACHE_TIMEOUT)
-                now = datetime.datetime.utcnow()
-
-                if valid_till > now:
-                    hit = True
         
         fopen = gzip.open if CACHE_COMPRESS else open
 
@@ -136,10 +142,26 @@ class CacheHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
 
 class CacheProxy(object):
+    def cache_cleanup(self):
+        import os
+
+        global CACHE_DIR
+        matches = []
+        path = get_cache_dir(CACHE_DIR)
+
+        now = datetime.datetime.utcnow()
+        for root, dirnames, filenames in os.walk(path):
+            for filename in filenames:
+                fname = os.path.join(root, filename)
+                if valid_file(fname, now):
+                    os.remove(fname)
+
+
     def run(self, port=3030,
             cache_dir=CACHE_DIR,
             cache_timeout=CACHE_TIMEOUT,
-            cache_compress=CACHE_COMPRESS):
+            cache_compress=CACHE_COMPRESS,
+            cache_cleanup=False):
         global CACHE_DIR
         global CACHE_TIMEOUT
         global CACHE_COMPRESS
@@ -147,11 +169,16 @@ class CacheProxy(object):
         if cache_dir:
             CACHE_DIR = cache_dir
 
+        if cache_cleanup:
+            log("Server startup with a cache cleanup")
+            self.cache_cleanup()
+
         CACHE_COMPRESS = cache_compress
         CACHE_TIMEOUT = cache_timeout
 
         if not os.path.isdir(CACHE_DIR):
             make_dirs(get_cache_dir(CACHE_DIR))
+
 
         server_address = ('', port)
         httpd = BaseHTTPServer.HTTPServer(server_address, CacheHandler)
